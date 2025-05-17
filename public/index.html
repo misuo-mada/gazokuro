@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>顔加工ツール</title>
+  <script defer src="js/face-api.min.js"></script>
+  <style>
+    body {
+      background: #111;
+      color: white;
+      text-align: center;
+      font-family: sans-serif;
+    }
+    canvas {
+      border: 1px solid #555;
+      margin-top: 10px;
+      background: #222;
+    }
+    button {
+      margin: 10px;
+      padding: 10px 20px;
+      font-size: 16px;
+    }
+  </style>
+</head>
+<body>
+  <h1>顔加工ツール</h1>
+  <input type="file" id="upload" accept="image/*"><br><br>
+
+  <div>
+    <button id="eyeLineBtn">目元に黒目線</button>
+    <button id="mosaicBtn">輪郭＋目元モザイク</button>
+    <button id="blackoutBtn">輪郭＋目元 黒塗り</button>
+    <button id="saveBtn">画像をダウンロード</button>
+  </div>
+
+  <canvas id="canvas" width="512" height="512"></canvas>
+
+  <script>
+    let img = null;
+    let landmarks = null;
+    let faceOutline = [];
+
+    window.onload = async () => {
+      await faceapi.nets.tinyFaceDetector.loadFromUri('./models');
+      await faceapi.nets.faceLandmark68Net.loadFromUri('./models');
+      console.log("✅ モデル読み込み完了");
+
+      const canvas = document.getElementById("canvas");
+      const ctx = canvas.getContext("2d");
+
+      document.getElementById("upload").addEventListener("change", async e => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        img = new Image();
+        img.onload = async () => {
+          canvas.width = img.width;
+          canvas.height = img.height;
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          ctx.drawImage(img, 0, 0);
+
+          const result = await faceapi
+            .detectSingleFace(canvas, new faceapi.TinyFaceDetectorOptions())
+            .withFaceLandmarks();
+
+          if (!result || !result.landmarks) {
+            alert("顔が検出できませんでした。");
+            return;
+          }
+
+          landmarks = result.landmarks;
+          faceOutline = buildExtendedFaceRegion(landmarks);
+        };
+        img.src = URL.createObjectURL(file);
+      });
+
+      // ボタン：目線
+      document.getElementById("eyeLineBtn").onclick = () => {
+        if (!landmarks) return;
+        ctx.drawImage(img, 0, 0);
+        drawEyeLine(ctx, landmarks);
+      };
+
+      // ボタン：モザイク
+      document.getElementById("mosaicBtn").onclick = () => {
+        if (!landmarks) return;
+        ctx.drawImage(img, 0, 0);
+        applyMosaicToRegion(img, faceOutline, ctx);
+      };
+
+      // ボタン：黒塗り
+      document.getElementById("blackoutBtn").onclick = () => {
+        if (!landmarks) return;
+        ctx.drawImage(img, 0, 0);
+        fillRegionBlack(faceOutline, ctx);
+      };
+
+      // ボタン：保存
+      document.getElementById("saveBtn").onclick = () => {
+        const link = document.createElement('a');
+        link.download = 'processed_image.png';
+        link.href = canvas.toDataURL('image/png');
+        link.click();
+      };
+    };
+
+    function buildExtendedFaceRegion(landmarks) {
+      const jaw = landmarks.getJawOutline();
+      const leftBrow = landmarks.getLeftEyeBrow();
+      const rightBrow = landmarks.getRightEyeBrow();
+      const offset = 20;
+
+      const forehead = [
+        ...rightBrow.map(p => ({ x: p.x, y: p.y - offset })).reverse(),
+        ...leftBrow.map(p => ({ x: p.x, y: p.y - offset }))
+      ];
+      return [...jaw, ...forehead];
+    }
+
+    function drawEyeLine(ctx, landmarks) {
+      const leftEye = landmarks.getLeftEye();
+      const rightEye = landmarks.getRightEye();
+      const allEye = [...leftEye, ...rightEye];
+      const yAvg = allEye.reduce((sum, p) => sum + p.y, 0) / allEye.length;
+      const minX = Math.min(...allEye.map(p => p.x)) - 20;
+      const maxX = Math.max(...allEye.map(p => p.x)) + 20;
+
+      ctx.fillStyle = 'black';
+      ctx.fillRect(minX, yAvg - 20, maxX - minX, 40); // 太めの黒帯
+    }
+
+    function applyMosaicToRegion(img, points, ctx, scale = 0.05) {
+      const w = ctx.canvas.width;
+      const h = ctx.canvas.height;
+
+      const tempCanvas = document.createElement('canvas');
+      const tempCtx = tempCanvas.getContext('2d');
+      tempCanvas.width = w;
+      tempCanvas.height = h;
+
+      const smallW = w * scale;
+      const smallH = h * scale;
+      tempCtx.drawImage(img, 0, 0, smallW, smallH);
+
+      const mosaic = document.createElement('canvas');
+      mosaic.width = w;
+      mosaic.height = h;
+      const mosaicCtx = mosaic.getContext('2d');
+      mosaicCtx.imageSmoothingEnabled = false;
+      mosaicCtx.drawImage(tempCanvas, 0, 0, smallW, smallH, 0, 0, w, h);
+
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(points[0].x, points[0].y);
+      for (let i = 1; i < points.length; i++) {
+        ctx.lineTo(points[i].x, points[i].y);
+      }
+      ctx.closePath();
+      ctx.clip();
+      ctx.drawImage(mosaic, 0, 0);
+      ctx.restore();
+    }
+
+    function fillRegionBlack(points, ctx) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(points[0].x, points[0].y);
+      for (let i = 1; i < points.length; i++) {
+        ctx.lineTo(points[i].x, points[i].y);
+      }
+      ctx.closePath();
+      ctx.fillStyle = 'black';
+      ctx.fill();
+      ctx.restore();
+    }
+  </script>
+</body>
+</html>
